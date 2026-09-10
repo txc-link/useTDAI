@@ -1,0 +1,63 @@
+# Merge these sections into ~/.codex/config.toml.
+# If [features] already exists, add only hooks = true to that table.
+
+[features]
+hooks = true
+
+[mcp_servers.tdai_memory]
+type = "stdio"
+command = "uv"
+# Windows example:
+args = ["run", "--script", 'C:\Users\YOUR_NAME\.codex\skills\tdai-memory\scripts\server.py']
+# Linux/macOS alternative (replace the args line above):
+# args = ["run", "--script", "/home/YOUR_NAME/.codex/skills/tdai-memory/scripts/server.py"]
+env_vars = ["TDAI_USER_KEY"]
+startup_timeout_sec = 60
+tool_timeout_sec = 60
+enabled = true
+required = false
+
+[mcp_servers.tdai_memory.env]
+TDAI_MEMORY_ENDPOINT = "https://memory.example.com:18420"
+TDAI_SERVICE_ID = "default"
+TDAI_TEAM_ID = "<YOUR_TEAM_ID>"
+TDAI_AGENT_ID = "<YOUR_AGENT_ID>"
+TDAI_USER_ID = "<YOUR_USER_ID>"
+# Optional. Do not set globally when one Codex installation works on many Tasks.
+# TDAI_TASK_ID = "<YOUR_TASK_ID>"
+
+# Optional read-only Wiki, CodeGraph, and Skill sidecar. Keep disabled until the
+# MemoryKnowledge root endpoint is known and reachable; do not guess its port.
+[mcp_servers.tdai_knowledge]
+type = "stdio"
+command = "uv"
+# Windows example:
+args = ["run", "--script", 'C:\Users\YOUR_NAME\.codex\skills\tdai-memory\scripts\knowledge_server.py']
+# Linux/macOS alternative (replace the args line above):
+# args = ["run", "--script", "/home/YOUR_NAME/.codex/skills/tdai-memory/scripts/knowledge_server.py"]
+env_vars = ["TDAI_USER_KEY"]
+startup_timeout_sec = 60
+tool_timeout_sec = 60
+enabled = false
+required = false
+
+[mcp_servers.tdai_knowledge.env]
+TDAI_KNOWLEDGE_ENDPOINT = "https://knowledge.example.com:18424"
+TDAI_MEMORY_ENDPOINT = "https://memory.example.com:18420"
+TDAI_SERVICE_ID = "default"
+TDAI_TEAM_ID = "<YOUR_TEAM_ID>"
+TDAI_AGENT_ID = "<YOUR_AGENT_ID>"
+TDAI_USER_ID = "<YOUR_USER_ID>"
+# TDAI_TASK_ID = "<YOUR_TASK_ID>"
+
+[[hooks.PreCompact]]
+matcher = "manual|auto"
+
+[[hooks.PreCompact.hooks]]
+type = "command"
+# Linux/macOS command; replace the path for the installation.
+command = 'uv run --script "/home/YOUR_NAME/.codex/skills/tdai-memory/scripts/server.py" --capture-hook'
+# Windows override; replace the path for the installation.
+command_windows = 'uv run --script "C:\Users\YOUR_NAME\.codex\skills\tdai-memory\scripts\server.py" --capture-hook'
+timeout = 60
+statusMessage = "Saving conversation memory to TDAI"

@@ -1,0 +1,29 @@
+name: test
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  offline-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Compile Python entrypoints
+        run: >-
+          python -m py_compile
+          scripts/server.py
+          scripts/smoke_test.py
+          scripts/knowledge_server.py
+          scripts/knowledge_smoke_test.py
+      - name: Test transcript privacy filter
+        run: uv run --script scripts/server.py --parser-test
+      - name: Test Knowledge MCP against local mock
+        run: uv run --script scripts/knowledge_smoke_test.py
