@@ -140,12 +140,18 @@ class KnowledgeClient:
         return data
 
     def knowledge_post(self, path: str, body: dict[str, Any]) -> Any:
-        # MemoryKnowledge is an internal service and uses service isolation, not user auth.
+        # MemoryKnowledge 自身只用服务隔离头；一旦暴露到公网，必须由外层网关
+        # （如 Caddy）用同一个 TDAI_USER_KEY 做 Bearer 鉴权。因此这里必须携带
+        # Authorization，否则网关会直接 401。注意：凭据只来自用户级环境变量，
+        # 不写入任何配置文件。
         return self._post(
             self.knowledge_endpoint,
             path,
             body,
-            {"x-tdai-service-id": self.service_id},
+            {
+                "Authorization": f"Bearer {self.user_key}",
+                "x-tdai-service-id": self.service_id,
+            },
         )
 
     def memory_post(self, path: str, body: dict[str, Any]) -> Any:
