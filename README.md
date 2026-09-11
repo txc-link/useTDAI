@@ -1,6 +1,6 @@
-# TDAI Memory Sidecar for Codex
+# TDAI Memory Sidecar for Agent Harnesses
 
-让 Codex 保持直连官方模型，同时通过本地 MCP 桥接器按需访问自托管 TDAI 记忆服务。
+让 Codex、Claude Code、Hermes、OpenCode、Pi 和 DeepSeek Harness 保持直连各自模型，同时通过统一旁路按需访问自托管 TDAI 记忆服务。
 
 ## 为什么采用旁路架构
 
@@ -18,7 +18,7 @@ Codex ────────────────────────�
                 └─ PreCompact 强制刷新 ────────────┘
 ```
 
-这样可以保留官方 Codex 的性能和兼容性；TDAI 不可用时，只影响跨任务记忆，不应接管模型流量。
+这样可以保留原生 provider 的性能和兼容性；TDAI 不可用时，只影响跨任务记忆，不应接管模型流量。
 
 ## 能力
 
@@ -77,6 +77,8 @@ uv run --script scripts/knowledge_smoke_test.py
 
 Wiki、CodeGraph、Skill 的可选旁路配置和渐进检索方法，见 [Knowledge MCP 指南](references/knowledge.md)。
 
+Claude Code、Hermes、OpenCode、Pi 和 DeepSeek Harness 的事件映射、安装路径与验证方法，见 [多 Agent 平台适配](references/platform-adapters.md)。
+
 ## 配置与数据
 
 - 非敏感连接参数通过 Codex MCP 的 `[mcp_servers.tdai_memory.env]` 传入。
@@ -94,7 +96,7 @@ OpenAI Skills API 也支持上传整个目录或 ZIP，并以不可变版本发�
 
 ## 版本
 
-当前版本：`0.6.0`。
+当前版本：`0.7.0`。
 
 ## License
 

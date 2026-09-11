@@ -1,0 +1,8 @@
+- insert:
+    - id: tdai-memory-sidecar
+      name: dsh-plugin-tdai-memory-sidecar
+      config:
+        command: uv
+        script: /absolute/path/to/tdai-memory/scripts/server.py
+        batchTurns: 5
+        idleSeconds: 180

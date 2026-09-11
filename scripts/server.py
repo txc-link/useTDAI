@@ -25,7 +25,10 @@ from mcp.server.fastmcp import FastMCP
 
 
 DEFAULT_SERVICE_ID = "default"
-DATA_DIR = Path.home() / ".codex" / "tdai-memory"
+DATA_DIR = Path(
+    os.environ.get("TDAI_LOCAL_DATA_DIR", "").strip()
+    or Path.home() / ".codex" / "tdai-memory"
+).expanduser()
 STATE_PATH = DATA_DIR / "checkpoints.json"
 PENDING_DIR = DATA_DIR / "pending"
 WORKER_DIR = DATA_DIR / "workers"
@@ -68,6 +71,10 @@ def _extract_text(content: Any) -> str:
         if isinstance(item, str):
             parts.append(item)
         elif isinstance(item, dict):
+            # Keep only human-visible text. Claude/Pi/DSH may place tool results,
+            # tool calls, or reasoning blocks in the same content array.
+            if item.get("type") not in {None, "text", "input_text", "output_text"}:
+                continue
             value = item.get("text")
             if not isinstance(value, str):
                 value = item.get("content")
@@ -169,6 +176,11 @@ def _worker_path(checkpoint_key: str) -> Path:
     return WORKER_DIR / f"{checkpoint_key}.json"
 
 
+def _checkpoint_key(platform: str, session_id: str) -> str:
+    identity = session_id if platform == "codex" else f"{platform}:{session_id}"
+    return hashlib.sha256(identity.encode("utf-8")).hexdigest()
+
+
 def _load_pending(checkpoint_key: str) -> dict[str, Any] | None:
     try:
         value = json.loads(_pending_path(checkpoint_key).read_text(encoding="utf-8"))
@@ -219,10 +231,20 @@ def _parse_transcript(path: str, max_messages: int = 300) -> list[dict[str, str]
                 entry = json.loads(line)
             except (json.JSONDecodeError, TypeError):
                 continue
-            payload = entry.get("payload", entry)
-            if not isinstance(payload, dict) or payload.get("type") != "message":
+            payload = entry.get("payload")
+            if not isinstance(payload, dict):
+                # Claude Code stores the conversational message under `message`
+                # and marks the outer record as `user` or `assistant`.
+                candidate = entry.get("message")
+                payload = candidate if isinstance(candidate, dict) else entry
+            if not isinstance(payload, dict):
                 continue
-            role = payload.get("role")
+            payload_type = payload.get("type")
+            role = payload.get("role") or (
+                entry.get("type") if entry.get("type") in {"user", "assistant"} else None
+            )
+            if payload_type not in {None, "message", "user", "assistant"}:
+                continue
             if role not in {"user", "assistant"}:
                 continue
             if role == "assistant" and payload.get("phase") not in {None, "final_answer"}:
@@ -681,17 +703,18 @@ def _capture_transcript(
     session_id: str,
     max_messages: int = 300,
     task_id: str | None = None,
+    platform: str = "codex",
 ) -> dict[str, Any]:
-    """Capture new safe user/final-assistant messages before Codex compacts context."""
+    """Capture new safe user/final-assistant messages from a supported harness."""
     parsed = _parse_transcript(transcript_path, max_messages=max_messages)
     state = _load_state()
-    checkpoint_key = hashlib.sha256(session_id.encode("utf-8")).hexdigest()
+    checkpoint_key = _checkpoint_key(platform, session_id)
     already = set(state.get(checkpoint_key, []))
     pending = [m for m in parsed if _message_id(m["role"], m["content"]) not in already]
     if not pending:
         return {"captured": 0, "skipped": len(parsed)}
 
-    remote_session = f"codex-{checkpoint_key[:24]}"
+    remote_session = f"{platform}-{checkpoint_key[:24]}"
     client = _client()
     for offset in range(0, len(pending), 50):
         client.post(
@@ -753,7 +776,7 @@ def _flush_pending(checkpoint_key: str) -> dict[str, int]:
         return {"captured": 0, "remaining": 0}
 
     client = _client()
-    remote_session = f"codex-{checkpoint_key[:24]}"
+    remote_session = str(pending.get("remote_session") or f"codex-{checkpoint_key[:24]}")
     for offset in range(0, len(messages), 50):
         client.post(
             "/v3/conversation/add",
@@ -818,6 +841,7 @@ def _ensure_idle_worker(
         "stdout": subprocess.DEVNULL,
         "stderr": subprocess.DEVNULL,
         "close_fds": True,
+        "env": {**os.environ, "TDAI_LOCAL_DATA_DIR": str(DATA_DIR)},
     }
     if os.name == "nt":
         kwargs["creationflags"] = (
@@ -839,15 +863,18 @@ def _queue_transcript(
     batch_turns: int = DEFAULT_BATCH_TURNS,
     idle_seconds: int = DEFAULT_IDLE_SECONDS,
     start_worker: bool = True,
+    platform: str = "codex",
 ) -> dict[str, int]:
     parsed = _parse_transcript(transcript_path, max_messages=max_messages)
-    checkpoint_key = hashlib.sha256(session_id.encode("utf-8")).hexdigest()
+    checkpoint_key = _checkpoint_key(platform, session_id)
     state = _load_state()
     captured_ids = set(state.get(checkpoint_key, []))
     path = _pending_path(checkpoint_key)
     with _file_lock(_queue_lock_path(checkpoint_key)):
         pending = _load_pending(checkpoint_key) or {
             "session_id": session_id,
+            "platform": platform,
+            "remote_session": f"{platform}-{checkpoint_key[:24]}",
             "task_id": task_id,
             "created_at": time.time(),
             "updated_at": time.time(),
@@ -930,11 +957,11 @@ def capture_transcript(
     max_messages: int = 300,
     task_id: str | None = None,
 ) -> dict[str, Any]:
-    """Capture new safe user/final-assistant messages before Codex compacts context."""
+    """Capture new safe user/final-assistant messages before context is discarded."""
     return _capture_transcript(transcript_path, session_id, max_messages, task_id)
 
 
-def _capture_hook() -> int:
+def _capture_hook(platform: str) -> int:
     event = json.load(sys.stdin)
     if not isinstance(event, dict):
         raise ValueError("Hook input must be a JSON object")
@@ -944,12 +971,12 @@ def _capture_hook() -> int:
         raise ValueError("Hook input has no transcript_path")
     if not isinstance(session_id, str) or not session_id.strip():
         raise ValueError("Hook input has no session_id")
-    _capture_transcript(transcript_path, session_id)
+    _capture_transcript(transcript_path, session_id, platform=platform)
     # Exit 0 with no stdout so the hook adds nothing to the model context.
     return 0
 
 
-def _buffer_hook(batch_turns: int, idle_seconds: int) -> int:
+def _buffer_hook(platform: str, batch_turns: int, idle_seconds: int) -> int:
     event = json.load(sys.stdin)
     if not isinstance(event, dict):
         raise ValueError("Hook input must be a JSON object")
@@ -966,8 +993,87 @@ def _buffer_hook(batch_turns: int, idle_seconds: int) -> int:
         task_id=task_id if isinstance(task_id, str) else None,
         batch_turns=batch_turns,
         idle_seconds=idle_seconds,
+        platform=platform,
     )
     # Queueing is local and fast; the detached worker performs network I/O.
+    return 0
+
+
+def _canonical_messages(value: Any) -> list[dict[str, str]]:
+    if not isinstance(value, list):
+        return []
+    messages: list[dict[str, str]] = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        role = item.get("role")
+        if role not in {"user", "assistant"}:
+            continue
+        text = _redact(_extract_text(item.get("content")))
+        if text and not _is_low_value(text):
+            messages.append({"role": role, "content": text})
+    return messages
+
+
+def _canonical_hook(platform: str, batch_turns: int, idle_seconds: int) -> int:
+    event = json.load(sys.stdin)
+    if not isinstance(event, dict):
+        raise ValueError("Canonical hook input must be a JSON object")
+    session_id = event.get("session_id")
+    if not isinstance(session_id, str) or not session_id.strip():
+        raise ValueError("Canonical hook input has no session_id")
+
+    raw_messages = event.get("messages")
+    if platform == "hermes" and not isinstance(raw_messages, list):
+        extra = event.get("extra") if isinstance(event.get("extra"), dict) else {}
+        raw_messages = [
+            {"role": "user", "content": extra.get("user_message", "")},
+            {"role": "assistant", "content": extra.get("assistant_response", "")},
+        ]
+    messages = _canonical_messages(raw_messages)
+    task_id = event.get("task_id")
+    if not isinstance(task_id, str):
+        extra = event.get("extra") if isinstance(event.get("extra"), dict) else {}
+        task_id = extra.get("task_id") if isinstance(extra.get("task_id"), str) else None
+
+    event_name = str(event.get("hook_event_name", ""))
+    force = bool(event.get("force")) or event_name in {
+        "PreCompact",
+        "SessionEnd",
+        "on_session_finalize",
+        "session_shutdown",
+        "session.compacted",
+        "session.deleted",
+    }
+
+    fd, transcript_path = tempfile.mkstemp(prefix="tdai-canonical-", suffix=".jsonl")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            for message in messages:
+                handle.write(
+                    json.dumps(
+                        {"payload": {"type": "message", **message}},
+                        ensure_ascii=False,
+                    )
+                    + "\n"
+                )
+        result = _queue_transcript(
+            transcript_path,
+            session_id,
+            task_id=task_id,
+            batch_turns=batch_turns,
+            idle_seconds=idle_seconds,
+            start_worker=not force,
+            platform=platform,
+        )
+    finally:
+        try:
+            os.unlink(transcript_path)
+        except FileNotFoundError:
+            pass
+
+    if force and result["queued"]:
+        _flush_pending(_checkpoint_key(platform, session_id))
     return 0
 
 
@@ -984,6 +1090,17 @@ def _apply_cli_scope(args: argparse.Namespace) -> None:
     for name, value in values.items():
         if isinstance(value, str) and value.strip():
             os.environ[name] = value.strip()
+
+
+def _apply_local_data_dir(args: argparse.Namespace) -> None:
+    global DATA_DIR, STATE_PATH, PENDING_DIR, WORKER_DIR, HOOK_LOG_PATH
+    if not isinstance(args.local_data_dir, str) or not args.local_data_dir.strip():
+        return
+    DATA_DIR = Path(args.local_data_dir).expanduser()
+    STATE_PATH = DATA_DIR / "checkpoints.json"
+    PENDING_DIR = DATA_DIR / "pending"
+    WORKER_DIR = DATA_DIR / "workers"
+    HOOK_LOG_PATH = DATA_DIR / "hook-errors.log"
 
 
 def _self_test() -> int:
@@ -1084,7 +1201,56 @@ def _parser_test() -> int:
     assert "sk-test_" not in serialized
     assert "[REDACTED_CREDENTIAL]" in serialized
     assert "[REDACTED_API_KEY]" in serialized
-    print("TDAI parser OK system/tool/ambient excluded; credentials redacted")
+
+    claude_sample = [
+        {
+            "type": "user",
+            "message": {
+                "role": "user",
+                "content": [{"type": "text", "text": "Keep this cross-platform decision."}],
+            },
+        },
+        {
+            "type": "user",
+            "message": {
+                "role": "user",
+                "content": [{"type": "tool_result", "content": "private tool output"}],
+            },
+        },
+        {
+            "type": "assistant",
+            "message": {
+                "role": "assistant",
+                "content": [{"type": "text", "text": "The decision is durable."}],
+            },
+        },
+    ]
+    fd, name = tempfile.mkstemp(prefix="tdai-claude-parser-test-", suffix=".jsonl")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            for item in claude_sample:
+                handle.write(json.dumps(item, ensure_ascii=False) + "\n")
+        claude_parsed = _parse_transcript(name)
+    finally:
+        try:
+            os.unlink(name)
+        except FileNotFoundError:
+            pass
+    assert claude_parsed == [
+        {"role": "user", "content": "Keep this cross-platform decision."},
+        {"role": "assistant", "content": "The decision is durable."},
+    ], claude_parsed
+    assert "private tool output" not in json.dumps(claude_parsed)
+    canonical = _canonical_messages(
+        [
+            {"role": "system", "content": "do not store"},
+            {"role": "user", "content": "ok"},
+            {"role": "user", "content": "A meaningful portable fact."},
+            {"role": "assistant", "content": [{"type": "text", "text": "Stored safely."}]},
+        ]
+    )
+    assert [message["role"] for message in canonical] == ["user", "assistant"], canonical
+    print("TDAI parser OK Codex/Claude/canonical formats filtered and redacted")
     return 0
 
 
@@ -1153,6 +1319,8 @@ def _buffer_test() -> int:
             assert not _pending_path(key).exists()
             assert not _worker_path(key).exists()
             assert len(_load_state().get(key, [])) == 1
+            assert _checkpoint_key("codex", "same") != _checkpoint_key("hermes", "same")
+            assert _checkpoint_key("hermes", "same") != _checkpoint_key("pi", "same")
     finally:
         globals()["_client"] = original_client
         DATA_DIR, STATE_PATH, PENDING_DIR, WORKER_DIR, HOOK_LOG_PATH = original_paths
@@ -1167,10 +1335,13 @@ def main() -> int:
     parser.add_argument("--buffer-test", action="store_true")
     parser.add_argument("--capture-hook", action="store_true")
     parser.add_argument("--buffer-hook", action="store_true")
+    parser.add_argument("--canonical-hook", action="store_true")
     parser.add_argument("--idle-worker", action="store_true")
     parser.add_argument("--checkpoint-key")
     parser.add_argument("--batch-turns", type=int, default=DEFAULT_BATCH_TURNS)
     parser.add_argument("--idle-seconds", type=int, default=DEFAULT_IDLE_SECONDS)
+    parser.add_argument("--platform", default="codex")
+    parser.add_argument("--local-data-dir")
     parser.add_argument("--endpoint")
     parser.add_argument("--service-id")
     parser.add_argument("--team-id")
@@ -1178,6 +1349,7 @@ def main() -> int:
     parser.add_argument("--user-id")
     parser.add_argument("--task-id")
     args = parser.parse_args()
+    _apply_local_data_dir(args)
     _apply_cli_scope(args)
     if args.self_test:
         return _self_test()
@@ -1186,9 +1358,19 @@ def main() -> int:
     if args.buffer_test:
         return _buffer_test()
     if args.capture_hook:
-        return _capture_hook()
+        return _capture_hook(args.platform)
     if args.buffer_hook:
-        return _buffer_hook(max(1, args.batch_turns), max(10, args.idle_seconds))
+        return _buffer_hook(
+            args.platform,
+            max(1, args.batch_turns),
+            max(10, args.idle_seconds),
+        )
+    if args.canonical_hook:
+        return _canonical_hook(
+            args.platform,
+            max(1, args.batch_turns),
+            max(10, args.idle_seconds),
+        )
     if args.idle_worker:
         if not args.checkpoint_key or not re.fullmatch(r"[0-9a-f]{64}", args.checkpoint_key):
             raise ValueError("--idle-worker requires a SHA-256 --checkpoint-key")

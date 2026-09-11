@@ -1,0 +1,20 @@
+# Merge into ~/.hermes/config.yaml. Keep the credentials and TDAI scope in
+# Hermes' process environment; do not put TDAI_USER_KEY in this file.
+hooks:
+  post_llm_call:
+    - command: "uv run --script /absolute/path/to/tdai-memory/scripts/server.py --canonical-hook --platform hermes --batch-turns 5 --idle-seconds 180"
+      timeout: 15
+  on_session_finalize:
+    - command: "uv run --script /absolute/path/to/tdai-memory/scripts/server.py --canonical-hook --platform hermes --batch-turns 5 --idle-seconds 180"
+      timeout: 60
+
+# The same stdio server supplies on-demand recall tools.
+mcp_servers:
+  tdai_memory:
+    command: "uv"
+    args:
+      - "run"
+      - "--script"
+      - "/absolute/path/to/tdai-memory/scripts/server.py"
+    enabled: true
+    timeout: 60

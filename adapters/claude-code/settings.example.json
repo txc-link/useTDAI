@@ -1,0 +1,38 @@
+{
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "uv run --script /absolute/path/to/tdai-memory/scripts/server.py --buffer-hook --platform claude-code --batch-turns 5 --idle-seconds 180",
+            "timeout": 15
+          }
+        ]
+      }
+    ],
+    "PreCompact": [
+      {
+        "matcher": "manual|auto",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "uv run --script /absolute/path/to/tdai-memory/scripts/server.py --capture-hook --platform claude-code",
+            "timeout": 60
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "uv run --script /absolute/path/to/tdai-memory/scripts/server.py --capture-hook --platform claude-code",
+            "timeout": 60
+          }
+        ]
+      }
+    ]
+  }
+}

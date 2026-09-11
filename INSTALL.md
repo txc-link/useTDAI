@@ -113,6 +113,8 @@ Hook 配置并不接受该字段。
 - 本地去重检查点、待上传批次和 worker 标记逐机保存在
   `~/.codex/tdai-memory/`，不会随 Git 同步。
 
+如需让同一记忆架构支持 Claude Code、Hermes、OpenCode、Pi 或 DeepSeek Harness，不要套用 Codex Hook 格式；请使用 [多 Agent 平台适配](references/platform-adapters.md) 中的原生事件适配器。
+
 ## 4. 验证
 
 在 Skill 目录执行：
