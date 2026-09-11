@@ -238,6 +238,130 @@ def _first_record(data: Any, *keys: str) -> dict[str, Any] | None:
     return None
 
 
+def _chat_memory_agent_id(asset_id: str, team_id: str) -> str | None:
+    """Resolve the owning agent from a system-minted chat_memory asset id."""
+    prefix = f"chat_memory-{team_id}-"
+    if not asset_id.startswith(prefix):
+        return None
+    agent_id = asset_id[len(prefix) :].strip()
+    return agent_id or None
+
+
+def _shared_chat_memories(client: TDAIClient) -> list[dict[str, Any]]:
+    """Return only chat memories visibly bound to the configured, caller-owned agent."""
+    data = client.post(
+        "/v3/meta/agent-fixed-asset/list-with-detail",
+        {
+            "agent_id": client.agent_id,
+            "asset_types": ["chat_memory"],
+            "apply_visibility_filter": True,
+            "touch_usage": False,
+            "limit": 100,
+            "offset": 0,
+        },
+    )
+    if not isinstance(data, dict):
+        raise RuntimeError("TDAI returned an invalid fixed-asset response")
+    agent = data.get("agent")
+    if not isinstance(agent, dict):
+        raise RuntimeError("TDAI fixed-asset response has no agent")
+    if agent.get("agent_id") != client.agent_id:
+        raise RuntimeError("TDAI fixed-asset response does not match the configured agent")
+    if agent.get("team_id") != client.team_id:
+        raise RuntimeError("Configured agent does not belong to the configured team")
+    if agent.get("owner_user_id") != client.user_id:
+        raise RuntimeError("Configured agent is not owned by the authenticated TDAI user")
+
+    result: list[dict[str, Any]] = []
+    items = data.get("items")
+    if not isinstance(items, list):
+        return result
+    for binding in items:
+        if not isinstance(binding, dict) or binding.get("asset_type") != "chat_memory":
+            continue
+        asset_id = binding.get("asset_id")
+        if not isinstance(asset_id, str):
+            continue
+        target_agent_id = _chat_memory_agent_id(asset_id, client.team_id)
+        if not target_agent_id or target_agent_id == client.agent_id:
+            continue
+
+        asset = client.post("/v3/meta/asset/get", {"asset_id": asset_id})
+        if not isinstance(asset, dict):
+            continue
+        if asset.get("asset_type") != "chat_memory":
+            continue
+        if asset.get("team_id") != client.team_id or asset.get("status") != "active":
+            continue
+        owner_user_id = asset.get("owner_user_id")
+        visibility = asset.get("visibility")
+        if not isinstance(owner_user_id, str) or not owner_user_id:
+            continue
+        # Mirror TDAI's binding visibility rules instead of trusting a caller-supplied id.
+        if visibility == "team":
+            pass
+        elif visibility == "private" and owner_user_id == client.user_id:
+            pass
+        else:
+            continue
+        result.append(
+            {
+                "asset_id": asset_id,
+                "name": binding.get("name") or asset.get("name") or asset_id,
+                "target_agent_id": target_agent_id,
+                "owner_user_id": owner_user_id,
+                "visibility": visibility,
+                "injection_mode": binding.get("injection_mode"),
+                "priority": binding.get("priority"),
+            }
+        )
+    return result
+
+
+def _shared_chat_memory(client: TDAIClient, asset_id: str) -> dict[str, Any]:
+    clean_asset_id = asset_id.strip()
+    if not clean_asset_id:
+        raise ValueError("A shared Chat Memory asset_id is required")
+    for item in _shared_chat_memories(client):
+        if item["asset_id"] == clean_asset_id:
+            return item
+    raise PermissionError(
+        "The requested Chat Memory is not an accessible fixed binding of the configured agent"
+    )
+
+
+def _shared_scope(
+    client: TDAIClient,
+    memory: dict[str, Any],
+    body: dict[str, Any],
+    task_id: str | None,
+) -> dict[str, Any]:
+    result = {
+        **body,
+        "team_id": client.team_id,
+        "agent_id": memory["target_agent_id"],
+        "user_id": memory["owner_user_id"],
+    }
+    effective_task_id = (task_id or client.task_id).strip()
+    if effective_task_id:
+        result["task_id"] = effective_task_id
+    return result
+
+
+def _public_shared_memory(memory: dict[str, Any]) -> dict[str, Any]:
+    return {
+        key: memory.get(key)
+        for key in (
+            "asset_id",
+            "name",
+            "target_agent_id",
+            "visibility",
+            "injection_mode",
+            "priority",
+        )
+    }
+
+
 def _memory_status(client: TDAIClient, task_id: str | None = None) -> dict[str, Any]:
     """Build a compact data-plane status without returning remembered content."""
     l0_count = client.post("/v3/conversation/count", client.scoped({}, task_id))
@@ -374,6 +498,68 @@ def conversation_search(
 
 
 @mcp.tool()
+def shared_memory_list() -> dict[str, Any]:
+    """List other agents' Chat Memory blocks explicitly bound to this Agent."""
+    client = _client()
+    items = [_public_shared_memory(item) for item in _shared_chat_memories(client)]
+    return {"source_agent_id": client.agent_id, "items": items, "total": len(items)}
+
+
+@mcp.tool()
+def shared_memory_search(
+    asset_id: str,
+    query: str,
+    limit: int = 5,
+    memory_type: str | None = None,
+    task_id: str | None = None,
+) -> dict[str, Any]:
+    """Search L1 memories in one explicitly bound Chat Memory from another Agent."""
+    clean_query = query.strip()
+    if not clean_query:
+        raise ValueError("A non-empty shared-memory query is required")
+    client = _client()
+    memory = _shared_chat_memory(client, asset_id)
+    body: dict[str, Any] = {
+        "query": clean_query,
+        "limit": max(1, min(int(limit), 20)),
+    }
+    if memory_type:
+        body["type"] = memory_type
+    data = client.post(
+        "/v3/atomic/search",
+        _shared_scope(client, memory, body, task_id),
+    )
+    return {"source": _public_shared_memory(memory), "results": data}
+
+
+@mcp.tool()
+def shared_conversation_search(
+    asset_id: str,
+    query: str,
+    limit: int = 5,
+    session_id: str | None = None,
+    task_id: str | None = None,
+) -> dict[str, Any]:
+    """Search L0 conversations in one explicitly bound Chat Memory from another Agent."""
+    clean_query = query.strip()
+    if not clean_query:
+        raise ValueError("A non-empty shared-conversation query is required")
+    client = _client()
+    memory = _shared_chat_memory(client, asset_id)
+    body: dict[str, Any] = {
+        "query": clean_query,
+        "limit": max(1, min(int(limit), 20)),
+    }
+    if session_id:
+        body["session_id"] = session_id
+    data = client.post(
+        "/v3/conversation/search",
+        _shared_scope(client, memory, body, task_id),
+    )
+    return {"source": _public_shared_memory(memory), "results": data}
+
+
+@mcp.tool()
 def remember(
     note: str, session_id: str | None = None, task_id: str | None = None
 ) -> Any:
@@ -478,8 +664,9 @@ def _self_test() -> int:
     status = _memory_status(client)
     if status.get("data_plane") != "ok":
         raise RuntimeError(f"Unexpected TDAI status: {status!r}")
+    _shared_chat_memories(client)
     print(
-        f"TDAI sidecar OK user_id={user_id}; auth, status, and L0-L3 read-only checks passed"
+        f"TDAI sidecar OK user_id={user_id}; auth, status, L0-L3, and shared bindings passed"
     )
     return 0
 

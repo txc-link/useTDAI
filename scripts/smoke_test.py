@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import shutil
 from pathlib import Path
@@ -16,6 +17,20 @@ from mcp.client.stdio import stdio_client
 
 
 SERVER = Path(__file__).with_name("server.py")
+
+
+def result_json(result: object) -> dict:
+    for item in getattr(result, "content", []):
+        text = getattr(item, "text", None)
+        if not isinstance(text, str):
+            continue
+        try:
+            data = json.loads(text)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(data, dict):
+            return data
+    raise RuntimeError("MCP tool returned no JSON object")
 
 
 def find_uv() -> str:
@@ -47,6 +62,9 @@ async def main() -> None:
                 "remember",
                 "scenario_list",
                 "scenario_read",
+                "shared_conversation_search",
+                "shared_memory_list",
+                "shared_memory_search",
             }
             if set(names) != expected:
                 raise RuntimeError(f"Unexpected MCP tools: {names}")
@@ -58,10 +76,39 @@ async def main() -> None:
             status = await session.call_tool("memory_status", {})
             if status.isError:
                 raise RuntimeError(f"memory_status failed: {status.content}")
+            shared = await session.call_tool("shared_memory_list", {})
+            if shared.isError:
+                raise RuntimeError(f"shared_memory_list failed: {shared.content}")
+            shared_data = result_json(shared)
+            items = shared_data.get("items", [])
+            if isinstance(items, list) and items and isinstance(items[0], dict):
+                asset_id = items[0].get("asset_id")
+                if isinstance(asset_id, str) and asset_id:
+                    for tool in ("shared_memory_search", "shared_conversation_search"):
+                        result = await session.call_tool(
+                            tool,
+                            {
+                                "asset_id": asset_id,
+                                "query": "TDAI connectivity test",
+                                "limit": 1,
+                            },
+                        )
+                        if result.isError:
+                            raise RuntimeError(f"{tool} failed: {result.content}")
+            denied = await session.call_tool(
+                "shared_memory_search",
+                {
+                    "asset_id": "chat_memory-not-a-bound-asset",
+                    "query": "must not be queried",
+                    "limit": 1,
+                },
+            )
+            if not denied.isError:
+                raise RuntimeError("unbound shared Chat Memory was not rejected")
             print(
                 "TDAI MCP OK tools="
                 + ",".join(names)
-                + "; read-only search/status passed"
+                + "; read-only search/status/shared-bindings passed"
             )
 
 

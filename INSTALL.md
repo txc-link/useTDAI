@@ -87,7 +87,7 @@ codex mcp list
 
 - `self-test` 显示鉴权以及 L0–L3 只读接口通过；没有 L2/L3 内容时返回空结果也属于通过；
 - `parser-test` 显示系统/环境内容被排除、凭据被脱敏；
-- `smoke_test.py` 显示八个 Memory MCP 工具并完成只读搜索和状态检查；
+- `smoke_test.py` 显示十一个 Memory MCP 工具并完成当前记忆、状态和共享绑定只读检查；
 - `knowledge_smoke_test.py` 使用临时本地模拟服务验证五个 Knowledge MCP 工具；
 - `codex mcp list` 中 `tdai_memory` 为 `enabled`。
 
@@ -129,6 +129,10 @@ codex mcp list
 确认 MCP 配置中的 Service、Team、Agent、User 标识与写入时一致。空结果不等于连接失败。
 
 先调用 `memory_status` 区分“连接/隔离范围错误”和“当前层确实没有记录”。L0/L1 最近时间用于判断数据是否继续推进；异步提炼失败原因仍应在工作台生成日志中查看。
+
+### 工作台绑定了另一个 Agent 的 Chat Memory，但搜不到
+
+先调用 `shared_memory_list`，确认目标记忆块出现在当前 Agent 的固定绑定中。然后用返回的 `asset_id` 调用 `shared_memory_search` 搜 L1；如果目标只有原始对话、尚未生成 L1，则改用 `shared_conversation_search` 搜 L0。共享工具只接受列表中已绑定的资产，不接受任意 `agent_id`。
 
 ### Knowledge MCP 启动失败
 

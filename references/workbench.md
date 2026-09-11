@@ -124,6 +124,8 @@ Task 虽是可选项，但官方安装文档明确指出：跳过 Task 仍能使
 
 当前 MCP 的推荐读取顺序是：先用 `core_memory_read` 看 L3；需要项目场景时用 `scenario_list` 找目录并用 `scenario_read` 展开；再用 `memory_search` 查 L1 细节；只有要核对原话时才查 L0。不要每轮把四层全部读入上下文。
 
+读取另一个 Agent 的 Chat Memory 时，先在工作台把那块记忆固定绑定给当前 Agent，再调用 `shared_memory_list` 获取允许读取的 `asset_id`。优先用 `shared_memory_search` 搜 L1；目标尚未提炼出 L1 或需要核对原话时，再用 `shared_conversation_search` 搜 L0。工具会按固定绑定重新校验权限，不支持直接填写任意目标 Agent ID。
+
 维护建议：
 
 - 先检查 L1 是否准确，再考虑修改 L2/L3。

@@ -28,11 +28,14 @@ Codex ────────────────────────�
 | `scenario_read` | 读取一个相关的 L2 场景正文 |
 | `memory_search` | 搜索提炼后的事实、偏好和决策 |
 | `conversation_search` | 搜索原始对话上下文 |
+| `shared_memory_list` | 列出工作台中明确绑定给当前 Agent 的其他 Chat Memory |
+| `shared_memory_search` | 搜索一个已绑定共享记忆块的 L1 原子记忆 |
+| `shared_conversation_search` | 搜索一个已绑定共享记忆块的 L0 原始对话 |
 | `memory_status` | 查看当前隔离范围的 L0–L3 数量和最近更新时间 |
 | `remember` | 立即保存一条长期有效的信息 |
 | `capture_transcript` | 在上下文压缩前增量保存安全对话 |
 
-默认 `tdai_memory` 桥接器覆盖 Chat Memory：L0/L1 检索、L2/L3 读取和 L0 写入。可选的独立 `tdai_knowledge` MCP 提供五个入口：资产列表、资产工具发现、只读资产工具调用、Skill 搜索和 Skill 读取。工作台中的绑定关系不会自动注入直连 OpenAI 的 Codex 上下文，仍由 Codex 按需调用。
+默认 `tdai_memory` 桥接器覆盖 Chat Memory：当前 Agent 的 L0/L1 检索、L2/L3 读取和 L0 写入，以及工作台明确绑定给当前 Agent 的其他 Chat Memory 的 L0/L1 只读搜索。共享工具会重新校验当前 Agent 归属、固定绑定、Team、资产类型、状态和可见性，不接受任意目标 Agent ID。可选的独立 `tdai_knowledge` MCP 提供五个入口：资产列表、资产工具发现、只读资产工具调用、Skill 搜索和 Skill 读取。工作台中的绑定关系不会自动注入直连 OpenAI 的 Codex 上下文，仍由 Codex 按需调用。
 
 自动捕获只保留用户消息和最终回答，并执行：
 
@@ -84,7 +87,7 @@ OpenAI Skills API 也支持上传整个目录或 ZIP，并以不可变版本发�
 
 ## 版本
 
-当前版本：`0.4.0`。
+当前版本：`0.5.0`。
 
 ## License
 
