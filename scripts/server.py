@@ -638,6 +638,21 @@ def _capture_hook() -> int:
     return 0
 
 
+def _apply_cli_scope(args: argparse.Namespace) -> None:
+    """Apply non-secret scope passed by a standalone command hook."""
+    values = {
+        "TDAI_MEMORY_ENDPOINT": args.endpoint,
+        "TDAI_SERVICE_ID": args.service_id,
+        "TDAI_TEAM_ID": args.team_id,
+        "TDAI_AGENT_ID": args.agent_id,
+        "TDAI_USER_ID": args.user_id,
+        "TDAI_TASK_ID": args.task_id,
+    }
+    for name, value in values.items():
+        if isinstance(value, str) and value.strip():
+            os.environ[name] = value.strip()
+
+
 def _self_test() -> int:
     client = _client()
     auth = client.verify()
@@ -745,7 +760,14 @@ def main() -> int:
     parser.add_argument("--self-test", action="store_true")
     parser.add_argument("--parser-test", action="store_true")
     parser.add_argument("--capture-hook", action="store_true")
+    parser.add_argument("--endpoint")
+    parser.add_argument("--service-id")
+    parser.add_argument("--team-id")
+    parser.add_argument("--agent-id")
+    parser.add_argument("--user-id")
+    parser.add_argument("--task-id")
     args = parser.parse_args()
+    _apply_cli_scope(args)
     if args.self_test:
         return _self_test()
     if args.parser_test:

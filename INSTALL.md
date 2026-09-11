@@ -63,6 +63,12 @@ export TDAI_USER_KEY='<YOUR_USER_KEY>'
 - `TDAI_MEMORY_ENDPOINT`；
 - TDAI 的 Service、Team、Agent 和 User 标识。
 
+`PreCompact` 是独立命令进程，不会继承
+`[mcp_servers.tdai_memory.env]`。因此 Hook 命令必须使用可执行文件的绝对路径，
+并通过 `--endpoint`、`--service-id`、`--team-id`、`--agent-id` 和
+`--user-id` 显式传入非敏感隔离参数。用户密钥仍只从 `TDAI_USER_KEY`
+读取，不能写进 Hook 命令或配置文件。
+
 `TDAI_TASK_ID` 是可选项。只有当这个 Codex 配置长期专用于同一个 TDAI Task 时才写入 MCP 环境；日常多任务使用应留空，在 `remember`、`memory_search` 或 `conversation_search` 调用时按需传入。
 
 保持主配置的 `model_provider = "openai"`，不要为了使用本 Skill 把官方模型流量切换到 TDAI Proxy。
@@ -141,6 +147,10 @@ codex mcp list
 ### 自动写入没有发生
 
 `PreCompact` 只会在自动压缩或手动 `/compact` 前触发。普通消息、切换任务或关闭窗口不会触发该 Hook。
+
+若 `~/.codex/tdai-memory/checkpoints.json` 从未生成，说明 Hook 尚未成功完成；
+优先检查 Hook 是否使用绝对 `uv` 路径，以及命令是否显式提供完整隔离参数。
+Codex 的内部审批/审查子任务可能自行压缩，但不会运行用户任务的 Hook，也不应写入长期记忆。
 
 ### `remember` 成功但 `memory_search` 暂时搜不到
 

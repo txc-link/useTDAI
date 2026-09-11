@@ -55,9 +55,10 @@ matcher = "manual|auto"
 
 [[hooks.PreCompact.hooks]]
 type = "command"
-# Linux/macOS command; replace the path for the installation.
-command = 'uv run --script "/home/YOUR_NAME/.codex/skills/tdai-memory/scripts/server.py" --capture-hook'
-# Windows override; replace the path for the installation.
-command_windows = 'uv run --script "C:\Users\YOUR_NAME\.codex\skills\tdai-memory\scripts\server.py" --capture-hook'
+# The hook is a separate process and does not inherit the MCP-specific .env table.
+# Linux/macOS command; replace uv/path/URL/IDs for the installation.
+command = '/absolute/path/to/uv run --script "/home/YOUR_NAME/.codex/skills/tdai-memory/scripts/server.py" --capture-hook --endpoint "https://memory.example.com:18420" --service-id "default" --team-id "<YOUR_TEAM_ID>" --agent-id "<YOUR_AGENT_ID>" --user-id "<YOUR_USER_ID>"'
+# Windows: replace the command above with this single command line.
+# command = '"C:\Users\YOUR_NAME\.local\bin\uv.exe" run --script "C:\Users\YOUR_NAME\.codex\skills\tdai-memory\scripts\server.py" --capture-hook --endpoint "https://memory.example.com:18420" --service-id "default" --team-id "<YOUR_TEAM_ID>" --agent-id "<YOUR_AGENT_ID>" --user-id "<YOUR_USER_ID>"'
 timeout = 60
 statusMessage = "Saving conversation memory to TDAI"
