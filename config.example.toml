@@ -48,6 +48,16 @@ TDAI_AGENT_ID = "<YOUR_AGENT_ID>"
 TDAI_USER_ID = "<YOUR_USER_ID>"
 # TDAI_TASK_ID = "<YOUR_TASK_ID>"
 
+# Each completed turn is filtered and appended only to a local queue. Network
+# upload happens asynchronously after five assistant turns or three idle minutes.
+[[hooks.Stop]]
+
+[[hooks.Stop.hooks]]
+type = "command"
+command = '"/absolute/path/to/uv" run --script "/absolute/path/to/.codex/skills/tdai-memory/scripts/server.py" --buffer-hook --batch-turns 5 --idle-seconds 180 --endpoint "https://memory.example.com:18420" --service-id "default" --team-id "<YOUR_TEAM_ID>" --agent-id "<YOUR_AGENT_ID>" --user-id "<YOUR_USER_ID>"'
+timeout = 15
+statusMessage = "Queueing conversation memory for TDAI"
+
 [[hooks.PreCompact]]
 matcher = "manual|auto"
 

@@ -7,12 +7,15 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import hashlib
 import json
 import os
 import re
+import subprocess
 import sys
 import tempfile
+import time
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -22,7 +25,13 @@ from mcp.server.fastmcp import FastMCP
 
 
 DEFAULT_SERVICE_ID = "default"
-STATE_PATH = Path.home() / ".codex" / "tdai-memory" / "checkpoints.json"
+DATA_DIR = Path.home() / ".codex" / "tdai-memory"
+STATE_PATH = DATA_DIR / "checkpoints.json"
+PENDING_DIR = DATA_DIR / "pending"
+WORKER_DIR = DATA_DIR / "workers"
+HOOK_LOG_PATH = DATA_DIR / "hook-errors.log"
+DEFAULT_BATCH_TURNS = 5
+DEFAULT_IDLE_SECONDS = 180
 
 _AMBIENT_BLOCK_RE = re.compile(
     r"<(?:in-app-browser-context|environment_context|recommended_plugins)\b[^>]*>.*?"
@@ -34,6 +43,10 @@ _BEARER_RE = re.compile(r"(?i)(\bBearer\s+)[A-Za-z0-9._~+/=-]{12,}")
 _CREDENTIAL_RE = re.compile(
     r"(?i)(\b(?:password|passwd|pwd|api[_ -]?key|token|secret|userKey)\b|密码)"
     r"(\s*(?:is|是|[:=：])?\s*)([^\s,，;；]+)"
+)
+_LOW_VALUE_RE = re.compile(
+    r"(?i)^(?:ok(?:ay)?|yes|yep|thanks?|done|好(?:的)?|可以|行|继续|收到|谢谢|明白|知道了|嗯|是|对(?:的)?)"
+    r"[\s.!！?？。~～]*$"
 )
 
 
@@ -97,6 +110,90 @@ def _message_id(role: str, text: str) -> str:
     return hashlib.sha256(f"{role}\0{text}".encode("utf-8")).hexdigest()
 
 
+def _is_low_value(text: str) -> bool:
+    return bool(_LOW_VALUE_RE.fullmatch(text.strip()))
+
+
+def _atomic_write_json(path: Path, value: Any) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, temp_name = tempfile.mkstemp(prefix=f"{path.stem}-", suffix=".json", dir=path.parent)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(value, handle, ensure_ascii=False, indent=2)
+        os.replace(temp_name, path)
+    finally:
+        try:
+            os.unlink(temp_name)
+        except FileNotFoundError:
+            pass
+
+
+@contextlib.contextmanager
+def _file_lock(path: Path, timeout: float = 5.0):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    deadline = time.monotonic() + timeout
+    descriptor: int | None = None
+    while descriptor is None:
+        try:
+            descriptor = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            os.write(descriptor, str(os.getpid()).encode("ascii"))
+        except FileExistsError:
+            try:
+                if time.time() - path.stat().st_mtime > 120:
+                    path.unlink()
+                    continue
+            except FileNotFoundError:
+                continue
+            if time.monotonic() >= deadline:
+                raise TimeoutError(f"Timed out waiting for local TDAI state lock: {path.name}")
+            time.sleep(0.05)
+    try:
+        yield
+    finally:
+        os.close(descriptor)
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            pass
+
+
+def _pending_path(checkpoint_key: str) -> Path:
+    return PENDING_DIR / f"{checkpoint_key}.json"
+
+
+def _queue_lock_path(checkpoint_key: str) -> Path:
+    return PENDING_DIR / f"{checkpoint_key}.lock"
+
+
+def _worker_path(checkpoint_key: str) -> Path:
+    return WORKER_DIR / f"{checkpoint_key}.json"
+
+
+def _load_pending(checkpoint_key: str) -> dict[str, Any] | None:
+    try:
+        value = json.loads(_pending_path(checkpoint_key).read_text(encoding="utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return None
+    if not isinstance(value, dict) or not isinstance(value.get("messages"), list):
+        return None
+    return value
+
+
+def _log_hook_error(message: str) -> None:
+    HOOK_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    safe = _redact(message).replace(_load_user_key(), "[REDACTED]") if _load_user_key() else _redact(message)
+    with HOOK_LOG_PATH.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps({"time": time.time(), "error": safe[:2000]}, ensure_ascii=False) + "\n")
+
+
+def _record_checkpoint(checkpoint_key: str, message_ids: list[str]) -> None:
+    with _file_lock(DATA_DIR / "checkpoints.lock"):
+        state = _load_state()
+        merged = list(dict.fromkeys([*state.get(checkpoint_key, []), *message_ids]))
+        state[checkpoint_key] = merged[-1000:]
+        _save_state(state)
+
+
 def _load_user_key() -> str:
     """Read the user-scoped environment variable, tolerating stale parent processes."""
     key = os.environ.get("TDAI_USER_KEY", "").strip()
@@ -131,7 +228,7 @@ def _parse_transcript(path: str, max_messages: int = 300) -> list[dict[str, str]
             if role == "assistant" and payload.get("phase") not in {None, "final_answer"}:
                 continue
             text = _redact(_extract_text(payload.get("content")))
-            if text:
+            if text and not _is_low_value(text):
                 messages.append({"role": role, "content": text})
     return messages[-max(1, min(int(max_messages), 1000)) :]
 
@@ -607,9 +704,223 @@ def _capture_transcript(
         )
 
     ids = [_message_id(m["role"], m["content"]) for m in parsed]
-    state[checkpoint_key] = ids[-1000:]
-    _save_state(state)
+    _record_checkpoint(checkpoint_key, ids)
+    _remove_pending_ids(checkpoint_key, set(ids))
     return {"captured": len(pending), "skipped": len(parsed) - len(pending)}
+
+
+def _remove_pending_ids(checkpoint_key: str, sent_ids: set[str]) -> None:
+    path = _pending_path(checkpoint_key)
+    with _file_lock(_queue_lock_path(checkpoint_key)):
+        pending = _load_pending(checkpoint_key)
+        if not pending:
+            return
+        remaining = [
+            message
+            for message in pending["messages"]
+            if _message_id(message["role"], message["content"]) not in sent_ids
+        ]
+        if remaining:
+            pending["messages"] = remaining
+            pending["updated_at"] = time.time()
+            _atomic_write_json(path, pending)
+        else:
+            try:
+                path.unlink()
+            except FileNotFoundError:
+                pass
+
+
+def _flush_pending(checkpoint_key: str) -> dict[str, int]:
+    with _file_lock(_queue_lock_path(checkpoint_key)):
+        pending = _load_pending(checkpoint_key)
+        if not pending:
+            return {"captured": 0, "remaining": 0}
+        messages = [
+            message
+            for message in pending["messages"]
+            if isinstance(message, dict)
+            and message.get("role") in {"user", "assistant"}
+            and isinstance(message.get("content"), str)
+        ]
+        session_id = str(pending.get("session_id", ""))
+        task_id = pending.get("task_id")
+    if not messages or not session_id:
+        _remove_pending_ids(
+            checkpoint_key,
+            {_message_id(m["role"], m["content"]) for m in messages},
+        )
+        return {"captured": 0, "remaining": 0}
+
+    client = _client()
+    remote_session = f"codex-{checkpoint_key[:24]}"
+    for offset in range(0, len(messages), 50):
+        client.post(
+            "/v3/conversation/add",
+            client.scoped(
+                {"session_id": remote_session, "messages": messages[offset : offset + 50]},
+                task_id if isinstance(task_id, str) else None,
+            ),
+            timeout=60.0,
+        )
+    sent_ids = [_message_id(m["role"], m["content"]) for m in messages]
+    _record_checkpoint(checkpoint_key, sent_ids)
+    _remove_pending_ids(checkpoint_key, set(sent_ids))
+    remaining = _load_pending(checkpoint_key)
+    return {
+        "captured": len(messages),
+        "remaining": len(remaining["messages"]) if remaining else 0,
+    }
+
+
+def _pid_alive(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+        return True
+    except (OSError, ValueError):
+        return False
+
+
+def _ensure_idle_worker(
+    checkpoint_key: str,
+    idle_seconds: int,
+    batch_turns: int,
+) -> None:
+    marker = _worker_path(checkpoint_key)
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        current = json.loads(marker.read_text(encoding="utf-8"))
+        pid = int(current.get("pid", 0)) if isinstance(current, dict) else 0
+        if _pid_alive(pid):
+            return
+        marker.unlink()
+    except (FileNotFoundError, json.JSONDecodeError, OSError, TypeError, ValueError):
+        try:
+            marker.unlink()
+        except FileNotFoundError:
+            pass
+
+    command = [
+        sys.executable,
+        str(Path(__file__).resolve()),
+        "--idle-worker",
+        "--checkpoint-key",
+        checkpoint_key,
+        "--idle-seconds",
+        str(idle_seconds),
+        "--batch-turns",
+        str(batch_turns),
+    ]
+    kwargs: dict[str, Any] = {
+        "stdin": subprocess.DEVNULL,
+        "stdout": subprocess.DEVNULL,
+        "stderr": subprocess.DEVNULL,
+        "close_fds": True,
+    }
+    if os.name == "nt":
+        kwargs["creationflags"] = (
+            getattr(subprocess, "CREATE_NO_WINDOW", 0)
+            | getattr(subprocess, "DETACHED_PROCESS", 0)
+            | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+        )
+    else:
+        kwargs["start_new_session"] = True
+    process = subprocess.Popen(command, **kwargs)
+    _atomic_write_json(marker, {"pid": process.pid, "started_at": time.time()})
+
+
+def _queue_transcript(
+    transcript_path: str,
+    session_id: str,
+    max_messages: int = 300,
+    task_id: str | None = None,
+    batch_turns: int = DEFAULT_BATCH_TURNS,
+    idle_seconds: int = DEFAULT_IDLE_SECONDS,
+    start_worker: bool = True,
+) -> dict[str, int]:
+    parsed = _parse_transcript(transcript_path, max_messages=max_messages)
+    checkpoint_key = hashlib.sha256(session_id.encode("utf-8")).hexdigest()
+    state = _load_state()
+    captured_ids = set(state.get(checkpoint_key, []))
+    path = _pending_path(checkpoint_key)
+    with _file_lock(_queue_lock_path(checkpoint_key)):
+        pending = _load_pending(checkpoint_key) or {
+            "session_id": session_id,
+            "task_id": task_id,
+            "created_at": time.time(),
+            "updated_at": time.time(),
+            "messages": [],
+        }
+        queued_ids = {
+            _message_id(message["role"], message["content"])
+            for message in pending["messages"]
+            if isinstance(message, dict)
+            and message.get("role") in {"user", "assistant"}
+            and isinstance(message.get("content"), str)
+        }
+        additions = [
+            message
+            for message in parsed
+            if _message_id(message["role"], message["content"])
+            not in captured_ids | queued_ids
+        ]
+        if additions:
+            pending["messages"].extend(additions)
+            pending["updated_at"] = time.time()
+            if task_id:
+                pending["task_id"] = task_id
+            _atomic_write_json(path, pending)
+        queued = len(pending["messages"])
+        turns = sum(1 for message in pending["messages"] if message.get("role") == "assistant")
+    if queued and start_worker:
+        _ensure_idle_worker(
+            checkpoint_key,
+            max(10, int(idle_seconds)),
+            max(1, int(batch_turns)),
+        )
+    return {"queued": queued, "added": len(additions), "turns": turns}
+
+
+def _idle_worker(checkpoint_key: str, idle_seconds: int, batch_turns: int) -> int:
+    marker = _worker_path(checkpoint_key)
+    failures = 0
+    try:
+        # The parent writes the marker immediately after spawning. Waiting briefly
+        # avoids leaving a stale marker if a forced batch flush finishes instantly.
+        for _ in range(20):
+            if marker.exists():
+                break
+            time.sleep(0.05)
+        while True:
+            pending = _load_pending(checkpoint_key)
+            if not pending or not pending.get("messages"):
+                return 0
+            messages = pending["messages"]
+            turns = sum(1 for message in messages if message.get("role") == "assistant")
+            idle_for = max(0.0, time.time() - float(pending.get("updated_at", 0)))
+            if turns < batch_turns and idle_for < idle_seconds:
+                time.sleep(min(15.0, max(1.0, idle_seconds - idle_for)))
+                continue
+            try:
+                result = _flush_pending(checkpoint_key)
+                failures = 0
+                if result["remaining"] == 0:
+                    return 0
+            except Exception as exc:
+                failures += 1
+                _log_hook_error(f"background flush attempt {failures} failed: {exc}")
+                if failures >= 3:
+                    return 1
+                time.sleep(30 * failures)
+    finally:
+        try:
+            current = json.loads(marker.read_text(encoding="utf-8"))
+            if isinstance(current, dict) and int(current.get("pid", 0)) == os.getpid():
+                marker.unlink()
+        except (FileNotFoundError, json.JSONDecodeError, OSError, TypeError, ValueError):
+            pass
 
 
 @mcp.tool()
@@ -635,6 +946,28 @@ def _capture_hook() -> int:
         raise ValueError("Hook input has no session_id")
     _capture_transcript(transcript_path, session_id)
     # Exit 0 with no stdout so the hook adds nothing to the model context.
+    return 0
+
+
+def _buffer_hook(batch_turns: int, idle_seconds: int) -> int:
+    event = json.load(sys.stdin)
+    if not isinstance(event, dict):
+        raise ValueError("Hook input must be a JSON object")
+    transcript_path = event.get("transcript_path")
+    session_id = event.get("session_id")
+    if not isinstance(transcript_path, str) or not transcript_path.strip():
+        raise ValueError("Hook input has no transcript_path")
+    if not isinstance(session_id, str) or not session_id.strip():
+        raise ValueError("Hook input has no session_id")
+    task_id = event.get("task_id")
+    _queue_transcript(
+        transcript_path,
+        session_id,
+        task_id=task_id if isinstance(task_id, str) else None,
+        batch_turns=batch_turns,
+        idle_seconds=idle_seconds,
+    )
+    # Queueing is local and fast; the detached worker performs network I/O.
     return 0
 
 
@@ -755,11 +1088,89 @@ def _parser_test() -> int:
     return 0
 
 
+def _buffer_test() -> int:
+    global DATA_DIR, STATE_PATH, PENDING_DIR, WORKER_DIR, HOOK_LOG_PATH
+    original_paths = (DATA_DIR, STATE_PATH, PENDING_DIR, WORKER_DIR, HOOK_LOG_PATH)
+    original_client = globals()["_client"]
+    posts: list[dict[str, Any]] = []
+
+    class FakeClient:
+        def scoped(self, body: dict[str, Any], task_id: str | None = None) -> dict[str, Any]:
+            return {**body, "task_id": task_id}
+
+        def post(self, path: str, body: dict[str, Any], timeout: float = 30.0) -> dict[str, Any]:
+            posts.append({"path": path, "body": body, "timeout": timeout})
+            return {}
+
+    try:
+        with tempfile.TemporaryDirectory(prefix="tdai-buffer-test-") as directory:
+            DATA_DIR = Path(directory)
+            STATE_PATH = DATA_DIR / "checkpoints.json"
+            PENDING_DIR = DATA_DIR / "pending"
+            WORKER_DIR = DATA_DIR / "workers"
+            HOOK_LOG_PATH = DATA_DIR / "hook-errors.log"
+            transcript = DATA_DIR / "transcript.jsonl"
+            sample = [
+                {
+                    "payload": {
+                        "type": "message",
+                        "role": "user",
+                        "content": [{"text": "可以"}],
+                    }
+                },
+                {
+                    "payload": {
+                        "type": "message",
+                        "role": "assistant",
+                        "phase": "final_answer",
+                        "content": [{"text": "Use a buffered TDAI capture policy."}],
+                    }
+                },
+            ]
+            transcript.write_text(
+                "".join(json.dumps(item, ensure_ascii=False) + "\n" for item in sample),
+                encoding="utf-8",
+            )
+            first = _queue_transcript(
+                str(transcript), "buffer-test", start_worker=False
+            )
+            second = _queue_transcript(
+                str(transcript), "buffer-test", start_worker=False
+            )
+            assert first == {"queued": 1, "added": 1, "turns": 1}, first
+            assert second == {"queued": 1, "added": 0, "turns": 1}, second
+            globals()["_client"] = lambda: FakeClient()
+            key = hashlib.sha256(b"buffer-test").hexdigest()
+            pending = _load_pending(key)
+            assert pending is not None
+            pending["updated_at"] = 0
+            _atomic_write_json(_pending_path(key), pending)
+            _atomic_write_json(
+                _worker_path(key), {"pid": os.getpid(), "started_at": time.time()}
+            )
+            assert _idle_worker(key, idle_seconds=1, batch_turns=5) == 0
+            assert len(posts) == 1 and posts[0]["path"] == "/v3/conversation/add", posts
+            assert not _pending_path(key).exists()
+            assert not _worker_path(key).exists()
+            assert len(_load_state().get(key, [])) == 1
+    finally:
+        globals()["_client"] = original_client
+        DATA_DIR, STATE_PATH, PENDING_DIR, WORKER_DIR, HOOK_LOG_PATH = original_paths
+    print("TDAI buffer OK local queue, filtering, dedup, flush, checkpoint passed")
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--self-test", action="store_true")
     parser.add_argument("--parser-test", action="store_true")
+    parser.add_argument("--buffer-test", action="store_true")
     parser.add_argument("--capture-hook", action="store_true")
+    parser.add_argument("--buffer-hook", action="store_true")
+    parser.add_argument("--idle-worker", action="store_true")
+    parser.add_argument("--checkpoint-key")
+    parser.add_argument("--batch-turns", type=int, default=DEFAULT_BATCH_TURNS)
+    parser.add_argument("--idle-seconds", type=int, default=DEFAULT_IDLE_SECONDS)
     parser.add_argument("--endpoint")
     parser.add_argument("--service-id")
     parser.add_argument("--team-id")
@@ -772,8 +1183,20 @@ def main() -> int:
         return _self_test()
     if args.parser_test:
         return _parser_test()
+    if args.buffer_test:
+        return _buffer_test()
     if args.capture_hook:
         return _capture_hook()
+    if args.buffer_hook:
+        return _buffer_hook(max(1, args.batch_turns), max(10, args.idle_seconds))
+    if args.idle_worker:
+        if not args.checkpoint_key or not re.fullmatch(r"[0-9a-f]{64}", args.checkpoint_key):
+            raise ValueError("--idle-worker requires a SHA-256 --checkpoint-key")
+        return _idle_worker(
+            args.checkpoint_key,
+            max(10, args.idle_seconds),
+            max(1, args.batch_turns),
+        )
     mcp.run(transport="stdio")
     return 0
 

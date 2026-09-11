@@ -69,7 +69,7 @@ LaunchAgent 文件。
 
 ## 3. 配置 MCP 和 Hook
 
-参考 [config.example.toml](config.example.toml)，把 `tdai_memory` MCP 块和 `PreCompact` Hook 合并到 `~/.codex/config.toml`。需要 Wiki、CodeGraph 或 Skill 时，再配置独立的 `tdai_knowledge` MCP；它默认关闭。
+参考 [config.example.toml](config.example.toml)，把 `tdai_memory` MCP、`Stop` 和 `PreCompact` Hook 合并到 `~/.codex/config.toml`。需要 Wiki、CodeGraph 或 Skill 时，再配置独立的 `tdai_knowledge` MCP；它默认关闭。
 
 必须替换：
 
@@ -86,7 +86,7 @@ macOS 的 `$HOME/.local/bin/uv`，Homebrew 安装则可能是
 `/Users/<用户名>/.codex/skills/tdai-memory/scripts/server.py`，Linux 才通常是
 `/home/<用户名>/...`。
 
-`PreCompact` 是独立命令进程，不会继承
+`Stop` 与 `PreCompact` 都是独立命令进程，不会继承
 `[mcp_servers.tdai_memory.env]`。因此 Hook 命令必须使用可执行文件的绝对路径，
 并通过 `--endpoint`、`--service-id`、`--team-id`、`--agent-id` 和
 `--user-id` 显式传入非敏感隔离参数。用户密钥仍只从 `TDAI_USER_KEY`
@@ -110,8 +110,8 @@ Hook 配置并不接受该字段。
 - 建议每个 Codex 实例使用独立的 TDAI Agent ID，再通过工作台资产绑定共享记忆；
 - Hook 信任绑定完整定义的哈希，换路径、Agent ID 或命令后必须在该机器重新打开
   `/hooks` 审核并信任；
-- 本地去重检查点也逐机保存在 `~/.codex/tdai-memory/checkpoints.json`，不会随 Git
-  同步。
+- 本地去重检查点、待上传批次和 worker 标记逐机保存在
+  `~/.codex/tdai-memory/`，不会随 Git 同步。
 
 ## 4. 验证
 
@@ -120,6 +120,7 @@ Hook 配置并不接受该字段。
 ```bash
 uv run --script scripts/server.py --self-test
 uv run --script scripts/server.py --parser-test
+uv run --script scripts/server.py --buffer-test
 uv run --script scripts/smoke_test.py
 uv run --script scripts/knowledge_smoke_test.py
 codex mcp list
@@ -129,6 +130,7 @@ codex mcp list
 
 - `self-test` 显示鉴权以及 L0–L3 只读接口通过；没有 L2/L3 内容时返回空结果也属于通过；
 - `parser-test` 显示系统/环境内容被排除、凭据被脱敏；
+- `buffer-test` 显示短确认过滤、本地排队、去重、批量刷新和 checkpoint 通过；
 - `smoke_test.py` 显示十一个 Memory MCP 工具并完成当前记忆、状态和共享绑定只读检查；
 - `knowledge_smoke_test.py` 使用临时本地模拟服务验证五个 Knowledge MCP 工具；
 - `codex mcp list` 中 `tdai_memory` 为 `enabled`。
@@ -137,10 +139,11 @@ codex mcp list
 
 ## 5. 启用
 
-完全重启 Codex。在该机器首次 Hook 信任提示中检查并启用 `PreCompact`。之后：
+完全重启 Codex。在该机器首次 Hook 信任提示中检查并启用 `Stop` 和 `PreCompact`。之后：
 
 - 明确要求记忆时，Skill 可调用 `remember` 立即保存；
-- 自动或手动压缩上下文前，Hook 调用 `capture_transcript`；
+- 每轮结束只把安全增量写入本地队列，累计五轮或空闲三分钟后异步上传；
+- 自动或手动压缩上下文前，`PreCompact` 同步刷新并去重；
 - 搜索只在跨任务上下文有价值时按需执行。
 
 ## 更新
@@ -149,10 +152,10 @@ codex mcp list
 
 ## 卸载
 
-1. 从 `~/.codex/config.toml` 删除 `[mcp_servers.tdai_memory]`、其 `.env` 子表以及对应的 `[[hooks.PreCompact]]`；如已配置，也删除 `[mcp_servers.tdai_knowledge]` 及其 `.env` 子表；
+1. 从 `~/.codex/config.toml` 删除 `[mcp_servers.tdai_memory]`、其 `.env` 子表以及对应的 `[[hooks.Stop]]`、`[[hooks.PreCompact]]`；如已配置，也删除 `[mcp_servers.tdai_knowledge]` 及其 `.env` 子表；
 2. 删除 Skill 目录；
 3. 如不再使用，删除用户级 `TDAI_USER_KEY`；
-4. 可选删除本地检查点 `~/.codex/tdai-memory/checkpoints.json`。
+4. 可选删除本地检查点、待上传队列、worker 标记和错误日志 `~/.codex/tdai-memory/`。
 
 卸载本地 Skill 不会自动删除 TDAI 服务端已经保存的记忆。
 
@@ -184,13 +187,17 @@ macOS Codex Desktop 还应执行 `launchctl getenv TDAI_USER_KEY`，只确认结
 
 ### 自动写入没有发生
 
-`PreCompact` 只会在自动压缩或手动 `/compact` 前触发。普通消息、切换任务或关闭窗口不会触发该 Hook。
+`Stop` 会在每轮完成时触发，但只进行快速的本地过滤和入队；真正上传由后台 worker
+在累计五轮或空闲三分钟后执行。`PreCompact` 会在自动压缩或手动 `/compact` 前同步
+兜底，因此不再依赖上下文压缩才产生记忆。
 
 Hook 在任务启动时加载。新增或修改配置、重新审核信任后，应完全重启 Codex，
 再创建或重新打开任务进行验证；配置生效前已经完成的压缩不会被事后补传。
 
-若 `~/.codex/tdai-memory/checkpoints.json` 从未生成，说明 Hook 尚未成功完成；
-优先检查 Hook 是否使用绝对 `uv` 路径，以及命令是否显式提供完整隔离参数。
+若已有对话但 `~/.codex/tdai-memory/pending/` 与 `checkpoints.json` 都从未生成，说明
+Hook 尚未成功完成；优先检查 Hook 是否使用绝对 `uv` 路径，以及命令是否显式提供
+完整隔离参数。存在 pending 但 checkpoint 长期不更新时，检查 `hook-errors.log`、用户级
+`TDAI_USER_KEY` 和网络连通性；pending 会保留并由后续 Hook 重试。
 空 transcript 或过滤后没有可上传消息时不会创建 checkpoint，因此应使用至少
 包含一条普通用户消息和一条最终回答的非敏感测试任务验证。
 Codex 的内部审批/审查子任务可能自行压缩，但不会运行用户任务的 Hook，也不应写入长期记忆。

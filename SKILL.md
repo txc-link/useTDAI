@@ -40,7 +40,7 @@ Do not store:
 - ambient browser/environment blocks;
 - raw command logs, transient errors, or speculative intermediate reasoning.
 
-The `PreCompact` command hook invokes the same implementation as `capture_transcript` automatically. It keeps only user messages and final assistant answers, strips ambient metadata, redacts credentials, and deduplicates previously captured messages.
+The `Stop` command hook filters each completed turn into a local queue without network I/O. A detached worker uploads asynchronously after five assistant turns or three idle minutes. `PreCompact` performs a synchronous final flush from the transcript. Both paths keep only meaningful user messages and final assistant answers, strip ambient metadata, redact credentials, and deduplicate captured or queued messages. Pending batches survive network failures and are retried by a later hook.
 
 ## Service scope
 
