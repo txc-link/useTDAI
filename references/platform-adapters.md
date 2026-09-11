@@ -62,12 +62,14 @@ Pi 的自动写入不需要 MCP。如果当前 Pi 发行版未内置 MCP client�
 
 ## DeepSeek Harness
 
-1. 先把 `adapters/dsh/cordis.patch.yml` 中的 `script` 改成真实绝对路径。
+`adapters/dsh` 是远程客户端插件，不内嵌 TDAI Core、SQLite 或模型 Proxy。它将自动捕获和五个按需工具直接连到配置的远程 MemoryCore：`tdai_memory_search`、`tdai_conversation_search`、`tdai_core_memory_read`、`tdai_memory_status` 和 `tdai_remember`。
+
+1. 先把 `adapters/dsh/cordis.patch.yml` 中的 `script`、`endpoint`、`teamId`、`agentId` 和 `userId` 改成真实值。
 2. 在 DSH 所在机器执行 `dsh plugin --profile <profile> add /absolute/path/to/useTDAI/adapters/dsh`。
-3. 检查该 profile 生成的 Cordis 配置，并确保 DSH 进程已继承统一环境变量。
+3. 确保 DSH 进程环境中存在 `TDAI_USER_KEY`。如果使用其他变量名，只在 `userKeyEnv` 中写变量名，不要把密钥值写入 patch。
 4. 重启对应 CLI/Web profile，用一轮完成对话检查 pending/checkpoint。
 
-按需召回使用 DSH 的 `@deepseek-ai/dsh-mcp-client`，将本项目 `server.py` 配为 stdio MCP server。写入插件和 MCP client 是两条独立旁路：任何一条故障都不应影响 DSH 正常问答。
+插件默认不自动向 system prompt 注入记忆；DSH 仅在需要时调用上述工具。TDAI 不可用时工具返回错误，但不改变 DSH 的模型 provider。若只要自动写入或只要工具，可分别关闭 `toolsEnabled` 或 `captureEnabled`。
 
 ## 验证和故障隔离
 
@@ -80,4 +82,3 @@ uv run --script scripts/server.py --self-test
 ```
 
 再从目标平台完成一轮有意义的对话，观察 `~/.codex/tdai-memory/pending/`；等满五轮/三分钟，或触发一次压缩/会话结束，再检查 `checkpoints.json` 和 TDAI 工作台 L0。故障记录在 `hook-errors.log`，待处理队列会保留以便后续重试。
-

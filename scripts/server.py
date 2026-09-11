@@ -1077,6 +1077,43 @@ def _canonical_hook(platform: str, batch_turns: int, idle_seconds: int) -> int:
     return 0
 
 
+def _json_tool(name: str) -> int:
+    """Execute one sidecar operation for hosts that expose native tools, not MCP."""
+    try:
+        raw = json.load(sys.stdin)
+    except json.JSONDecodeError as exc:
+        raise ValueError("JSON tool input must be a JSON object") from exc
+    if not isinstance(raw, dict):
+        raise ValueError("JSON tool input must be a JSON object")
+
+    operations = {
+        "memory_status": lambda: memory_status(task_id=raw.get("task_id")),
+        "core_memory_read": lambda: core_memory_read(task_id=raw.get("task_id")),
+        "memory_search": lambda: memory_search(
+            query=str(raw.get("query", "")),
+            limit=int(raw.get("limit", 5)),
+            memory_type=raw.get("memory_type"),
+            task_id=raw.get("task_id"),
+        ),
+        "conversation_search": lambda: conversation_search(
+            query=str(raw.get("query", "")),
+            limit=int(raw.get("limit", 5)),
+            session_id=raw.get("session_id"),
+            task_id=raw.get("task_id"),
+        ),
+        "remember": lambda: remember(
+            note=str(raw.get("note", "")),
+            session_id=raw.get("session_id"),
+            task_id=raw.get("task_id"),
+        ),
+    }
+    operation = operations.get(name)
+    if operation is None:
+        raise ValueError(f"Unsupported JSON tool: {name}")
+    print(json.dumps(operation(), ensure_ascii=False, default=str))
+    return 0
+
+
 def _apply_cli_scope(args: argparse.Namespace) -> None:
     """Apply non-secret scope passed by a standalone command hook."""
     values = {
@@ -1336,6 +1373,7 @@ def main() -> int:
     parser.add_argument("--capture-hook", action="store_true")
     parser.add_argument("--buffer-hook", action="store_true")
     parser.add_argument("--canonical-hook", action="store_true")
+    parser.add_argument("--json-tool")
     parser.add_argument("--idle-worker", action="store_true")
     parser.add_argument("--checkpoint-key")
     parser.add_argument("--batch-turns", type=int, default=DEFAULT_BATCH_TURNS)
@@ -1371,6 +1409,8 @@ def main() -> int:
             max(1, args.batch_turns),
             max(10, args.idle_seconds),
         )
+    if args.json_tool:
+        return _json_tool(args.json_tool)
     if args.idle_worker:
         if not args.checkpoint_key or not re.fullmatch(r"[0-9a-f]{64}", args.checkpoint_key):
             raise ValueError("--idle-worker requires a SHA-256 --checkpoint-key")

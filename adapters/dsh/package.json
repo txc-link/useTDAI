@@ -1,11 +1,12 @@
 {
   "name": "dsh-plugin-tdai-memory-sidecar",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "type": "module",
   "main": "index.js",
   "files": ["index.js", "cordis.patch.yml"],
   "peerDependencies": {
     "@deepseek-ai/cordis": "*",
+    "@deepseek-ai/dsh-tools": "*",
     "@deepseek-ai/schemastery": "*"
   },
   "dsh": {

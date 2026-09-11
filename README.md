@@ -78,6 +78,7 @@ uv run --script scripts/knowledge_smoke_test.py
 Wiki、CodeGraph、Skill 的可选旁路配置和渐进检索方法，见 [Knowledge MCP 指南](references/knowledge.md)。
 
 Claude Code、Hermes、OpenCode、Pi 和 DeepSeek Harness 的事件映射、安装路径与验证方法，见 [多 Agent 平台适配](references/platform-adapters.md)。
+其中 DSH 适配器是可直接配置远程 MemoryCore 的 Cordis 插件，自带按需召回/写入工具，不会在 DSH 机器再启动一套 TDAI。
 
 ## 配置与数据
 
@@ -96,7 +97,7 @@ OpenAI Skills API 也支持上传整个目录或 ZIP，并以不可变版本发�
 
 ## 版本
 
-当前版本：`0.7.0`。
+当前版本：`0.8.0`。
 
 ## License
 

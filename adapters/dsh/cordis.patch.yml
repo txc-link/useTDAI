@@ -4,5 +4,14 @@
       config:
         command: uv
         script: /absolute/path/to/tdai-memory/scripts/server.py
+        endpoint: https://memory.example.com:18420
+        serviceId: default
+        teamId: <YOUR_TEAM_ID>
+        agentId: <YOUR_AGENT_ID>
+        userId: <YOUR_USER_ID>
+        userKeyEnv: TDAI_USER_KEY
+        captureEnabled: true
+        toolsEnabled: true
         batchTurns: 5
         idleSeconds: 180
+        toolTimeoutSeconds: 60
