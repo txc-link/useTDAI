@@ -6,11 +6,12 @@ hooks = true
 
 [mcp_servers.tdai_memory]
 type = "stdio"
-command = "uv"
-# Windows example:
-args = ["run", "--script", 'C:\Users\YOUR_NAME\.codex\skills\tdai-memory\scripts\server.py']
-# Linux/macOS alternative (replace the args line above):
-# args = ["run", "--script", "/home/YOUR_NAME/.codex/skills/tdai-memory/scripts/server.py"]
+# Use absolute paths because Codex Desktop may not inherit the login shell PATH.
+# Windows: C:\Users\YOUR_NAME\.local\bin\uv.exe and C:\Users\YOUR_NAME\.codex\...
+# macOS: /Users/YOUR_NAME/.local/bin/uv and /Users/YOUR_NAME/.codex/...
+# Linux: /home/YOUR_NAME/.local/bin/uv and /home/YOUR_NAME/.codex/...
+command = "/absolute/path/to/uv"
+args = ["run", "--script", "/absolute/path/to/.codex/skills/tdai-memory/scripts/server.py"]
 env_vars = ["TDAI_USER_KEY"]
 startup_timeout_sec = 60
 tool_timeout_sec = 60
@@ -30,11 +31,8 @@ TDAI_USER_ID = "<YOUR_USER_ID>"
 # MemoryKnowledge root endpoint is known and reachable; do not guess its port.
 [mcp_servers.tdai_knowledge]
 type = "stdio"
-command = "uv"
-# Windows example:
-args = ["run", "--script", 'C:\Users\YOUR_NAME\.codex\skills\tdai-memory\scripts\knowledge_server.py']
-# Linux/macOS alternative (replace the args line above):
-# args = ["run", "--script", "/home/YOUR_NAME/.codex/skills/tdai-memory/scripts/knowledge_server.py"]
+command = "/absolute/path/to/uv"
+args = ["run", "--script", "/absolute/path/to/.codex/skills/tdai-memory/scripts/knowledge_server.py"]
 env_vars = ["TDAI_USER_KEY"]
 startup_timeout_sec = 60
 tool_timeout_sec = 60
@@ -56,9 +54,8 @@ matcher = "manual|auto"
 [[hooks.PreCompact.hooks]]
 type = "command"
 # The hook is a separate process and does not inherit the MCP-specific .env table.
-# Linux/macOS command; replace uv/path/URL/IDs for the installation.
-command = '/absolute/path/to/uv run --script "/home/YOUR_NAME/.codex/skills/tdai-memory/scripts/server.py" --capture-hook --endpoint "https://memory.example.com:18420" --service-id "default" --team-id "<YOUR_TEAM_ID>" --agent-id "<YOUR_AGENT_ID>" --user-id "<YOUR_USER_ID>"'
-# Windows: replace the command above with this single command line.
-# command = '"C:\Users\YOUR_NAME\.local\bin\uv.exe" run --script "C:\Users\YOUR_NAME\.codex\skills\tdai-memory\scripts\server.py" --capture-hook --endpoint "https://memory.example.com:18420" --service-id "default" --team-id "<YOUR_TEAM_ID>" --agent-id "<YOUR_AGENT_ID>" --user-id "<YOUR_USER_ID>"'
+# `command` is used on macOS/Linux. `command_windows` is the official Windows override.
+command = '"/absolute/path/to/uv" run --script "/absolute/path/to/.codex/skills/tdai-memory/scripts/server.py" --capture-hook --endpoint "https://memory.example.com:18420" --service-id "default" --team-id "<YOUR_TEAM_ID>" --agent-id "<YOUR_AGENT_ID>" --user-id "<YOUR_USER_ID>"'
+command_windows = '"C:\Users\YOUR_NAME\.local\bin\uv.exe" run --script "C:\Users\YOUR_NAME\.codex\skills\tdai-memory\scripts\server.py" --capture-hook --endpoint "https://memory.example.com:18420" --service-id "default" --team-id "<YOUR_TEAM_ID>" --agent-id "<YOUR_AGENT_ID>" --user-id "<YOUR_USER_ID>"'
 timeout = 60
 statusMessage = "Saving conversation memory to TDAI"

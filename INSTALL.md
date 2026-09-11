@@ -42,7 +42,7 @@ git clone https://github.com/txc-link/useTDAI.git "${CODEX_HOME:-$HOME/.codex}/s
 
 设置后完全退出并重新打开 Codex。桥接器在 Windows 上也会读取当前用户注册表中的用户级环境变量，以处理父进程环境尚未刷新的情况。
 
-### Linux/macOS
+### Linux
 
 用操作系统的密钥管理器、服务管理器或受保护的登录环境提供：
 
@@ -51,6 +51,21 @@ export TDAI_USER_KEY='<YOUR_USER_KEY>'
 ```
 
 不要将真实值提交到 shell 配置仓库。
+
+### macOS Codex Desktop
+
+macOS 的 Hook 机制可以使用，但从 Finder/Dock 启动的 Codex Desktop 通常不会读取
+`.zshrc` 中的 `export`。应在启动 Codex 之前，把密钥放进当前登录会话的
+`launchd` 环境：
+
+```bash
+launchctl setenv TDAI_USER_KEY '<YOUR_USER_KEY>'
+```
+
+完全退出并重新打开 Codex 后生效。`launchctl setenv` 不会把密钥写入本仓库，
+但它也不是加密存储；重启或重新登录后如果变量消失，需要重新注入。长期方案应由
+Keychain/密码管理器在登录时注入，避免把真实密钥明文写入可同步的 shell 配置或
+LaunchAgent 文件。
 
 ## 3. 配置 MCP 和 Hook
 
@@ -62,6 +77,14 @@ export TDAI_USER_KEY='<YOUR_USER_KEY>'
 - `args` 中的 `server.py` 绝对路径；
 - `TDAI_MEMORY_ENDPOINT`；
 - TDAI 的 Service、Team、Agent 和 User 标识。
+
+先在当前机器执行 `command -v uv`（Windows 用 `Get-Command uv`）取得真实绝对
+路径。默认安装位置通常是 Windows 的 `%USERPROFILE%\.local\bin\uv.exe`、
+macOS 的 `$HOME/.local/bin/uv`，Homebrew 安装则可能是
+`/opt/homebrew/bin/uv`（Apple Silicon）或 `/usr/local/bin/uv`（Intel）；以命令
+实际输出为准。Skill 路径在 macOS 通常是
+`/Users/<用户名>/.codex/skills/tdai-memory/scripts/server.py`，Linux 才通常是
+`/home/<用户名>/...`。
 
 `PreCompact` 是独立命令进程，不会继承
 `[mcp_servers.tdai_memory.env]`。因此 Hook 命令必须使用可执行文件的绝对路径，
@@ -76,6 +99,15 @@ export TDAI_USER_KEY='<YOUR_USER_KEY>'
 `TDAI_KNOWLEDGE_ENDPOINT` 必须指向 MemoryKnowledge 服务根地址。不同部署的内部默认端口可能不同，应从实际 Compose/服务配置确认，不要猜端口。该服务只应固定访问你配置的地址；桥接器不会跟随 API 返回的其他服务 URL。
 
 如果 `[features]` 已存在，只添加或合并 `hooks = true`，不要创建重复表。
+
+同一份 Hook 逻辑支持 Windows、macOS 和 Linux，但配置与信任是逐机的：
+
+- 每台机器填写自己的 `uv` 与 Skill 绝对路径；
+- 建议每个 Codex 实例使用独立的 TDAI Agent ID，再通过工作台资产绑定共享记忆；
+- Hook 信任绑定完整定义的哈希，换路径、Agent ID 或命令后必须在该机器重新打开
+  `/hooks` 审核并信任；
+- 本地去重检查点也逐机保存在 `~/.codex/tdai-memory/checkpoints.json`，不会随 Git
+  同步。
 
 ## 4. 验证
 
@@ -101,7 +133,7 @@ codex mcp list
 
 ## 5. 启用
 
-完全重启 Codex。在首次 Hook 信任提示中检查并启用 `PreCompact`。之后：
+完全重启 Codex。在该机器首次 Hook 信任提示中检查并启用 `PreCompact`。之后：
 
 - 明确要求记忆时，Skill 可调用 `remember` 立即保存；
 - 自动或手动压缩上下文前，Hook 调用 `capture_transcript`；
@@ -129,6 +161,8 @@ codex mcp list
 ### MCP 启动失败
 
 检查 `uv` 和 `server.py` 是否使用绝对路径，再单独运行 `--self-test` 查看错误。
+macOS Codex Desktop 还应执行 `launchctl getenv TDAI_USER_KEY`，只确认结果非空，
+不要把输出粘贴到日志或问题报告中。
 
 ### 检索为空
 

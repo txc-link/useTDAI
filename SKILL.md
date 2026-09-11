@@ -46,6 +46,7 @@ The `PreCompact` command hook invokes the same implementation as `capture_transc
 
 - Read the endpoint and isolation scope from `TDAI_MEMORY_ENDPOINT`, `TDAI_SERVICE_ID`, `TDAI_TEAM_ID`, `TDAI_AGENT_ID`, and `TDAI_USER_ID`. Use `TDAI_TASK_ID` only for a dedicated long-running task; otherwise pass a task ID explicitly when the tool supports it.
 - Authentication comes only from the user-scoped `TDAI_USER_KEY` environment variable. Never print it or place it in files under this skill.
+- Hook code is cross-platform, while executable paths, environment injection, Agent identity, checkpoints, and hook trust are device-local. On macOS Desktop, verify that the GUI process receives `TDAI_USER_KEY`; a shell-only `.zshrc` export may not reach apps launched from Finder or Dock.
 - For installation, migration, and diagnostics, read [INSTALL.md](INSTALL.md).
 - For TDAI Workbench administration, Agent/Task creation, asset binding, or memory inspection, read [references/workbench.md](references/workbench.md).
 - When drafting an Agent role prompt, rules prompt, or Task description, read [references/prompt-examples.md](references/prompt-examples.md).

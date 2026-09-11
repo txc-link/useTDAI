@@ -78,6 +78,7 @@ Wiki、CodeGraph、Skill 的可选旁路配置和渐进检索方法，见 [Knowl
 - `TDAI_USER_KEY` 必须保存在用户级环境变量或系统密钥管理器中。
 - 捕获检查点保存在 `~/.codex/tdai-memory/checkpoints.json`，不属于 Skill 源码。
 - `server.py` 使用 PEP 723 声明依赖，由 `uv` 创建隔离运行环境。
+- Windows、macOS、Linux 共用同一 Hook 实现，但绝对路径、环境变量注入、Agent ID、检查点和 `/hooks` 信任均按设备配置；不要直接复制另一台机器的完整 Hook 命令。
 
 ## 发布
 
@@ -87,7 +88,7 @@ OpenAI Skills API 也支持上传整个目录或 ZIP，并以不可变版本发�
 
 ## 版本
 
-当前版本：`0.5.0`。
+当前版本：`0.5.1`。
 
 ## License
 
